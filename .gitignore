@@ -1,0 +1,16 @@
+backend/venv/
+backend/__pycache__/
+backend/**/__pycache__/
+backend/exam_grading.db
+backend/answer_images/
+backend/answer_sheets/
+backend/ai_settings.json
+backend/backend.log
+backend/*.log
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+**/*.pyc
+**/*.pyo
+.DS_Store
+*.db-journal
