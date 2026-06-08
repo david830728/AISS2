@@ -1,10 +1,16 @@
+import asyncio
 import os
 import re
-from fastapi import APIRouter, Depends, HTTPException, status
+from datetime import datetime
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
 from sqlalchemy.orm import Session, joinedload
 from typing import List, Optional, Dict
 from app.database import get_db
 from app import models, schemas
+from app.auth import get_current_user
+
+# ── 进程内任务进度表（重启后重置）─────────────────────────────────────────────
+_grade_tasks: Dict[str, Dict] = {}
 
 
 def _effective_standard_answer(q: models.ExamQuestion) -> Optional[str]:
@@ -26,7 +32,7 @@ def _effective_standard_answer(q: models.ExamQuestion) -> Optional[str]:
             parts.append(sq["standard_answer"])
     return " | ".join(parts) if parts else None
 
-router = APIRouter(prefix="/api/results", tags=["results"])
+router = APIRouter(prefix="/api/results", tags=["results"], dependencies=[Depends(get_current_user)])
 
 
 @router.get("/exam/{exam_id}", response_model=List[schemas.StudentExamSummary])
@@ -38,7 +44,7 @@ def list_student_results(
     query = db.query(models.StudentExam).filter(models.StudentExam.exam_id == exam_id)
     if class_name:
         query = query.filter(models.StudentExam.class_name == class_name)
-    return query.order_by(models.StudentExam.total_score.desc().nullslast()).all()
+    return query.order_by(models.StudentExam.total_score.desc()).all()
 
 
 @router.get("/student-exam/{student_exam_id}", response_model=schemas.StudentExamOut)
@@ -316,6 +322,130 @@ async def ai_grade_all(student_exam_id: int, db: Session = Depends(get_db)):
         se.grading_status = models.GradingStatus.COMPLETED
     db.commit()
     return {"graded": graded_count, "total_score": se.total_score}
+
+
+# ── 全考试一键AI批改 ──────────────────────────────────────────────────────────
+
+async def _run_grade_all_exam(exam_id: int, task_id: str):
+    """后台任务：批改指定考试所有学生的填空/主观题待评答案。"""
+    from app.database import SessionLocal
+    from app.services.ai_grader import AIGrader
+
+    db = SessionLocal()
+    try:
+        pending = (
+            db.query(models.StudentAnswer)
+            .join(models.ExamQuestion, models.StudentAnswer.question_id == models.ExamQuestion.id)
+            .filter(
+                models.ExamQuestion.exam_id == exam_id,
+                models.ExamQuestion.question_type.in_([
+                    models.QuestionType.SUBJECTIVE,
+                    models.QuestionType.FILL,
+                ]),
+                models.StudentAnswer.grading_status == models.GradingStatus.PENDING,
+            )
+            .all()
+        )
+        _grade_tasks[task_id]["total"] = len(pending)
+        grader = AIGrader()
+        graded = 0
+        failed = 0
+        sem = asyncio.Semaphore(5)  # 最多 5 个并发请求，可按硅基流动限额调整
+
+        # 预先读取所有题目数据，避免并发时 lazy-load 问题
+        ans_params = []
+        for ans in pending:
+            q = ans.question
+            if not q:
+                continue
+            question_text = _effective_standard_answer(q) or ""
+            criteria = q.grading_criteria or ""
+            if not criteria and q.sub_questions:
+                criteria = "\n".join(
+                    f"{sq.get('label','')} {sq.get('grading_criteria','')}"
+                    for sq in (q.sub_questions or [])
+                    if isinstance(sq, dict) and sq.get("grading_criteria")
+                )
+            ans_params.append((ans, q.max_score, question_text, criteria))
+
+        async def _grade_one(ans, max_score, question_text, criteria):
+            nonlocal graded, failed
+            async with sem:
+                try:
+                    if ans.answer_image_path and os.path.exists(ans.answer_image_path):
+                        result = await grader.grade_with_image(
+                            question_text=question_text,
+                            criteria=criteria,
+                            max_score=max_score,
+                            image_path=ans.answer_image_path,
+                        )
+                        if result.get("recognized_text"):
+                            ans.recognized_answer = result["recognized_text"]
+                    else:
+                        result = await grader.grade(
+                            question_text=question_text,
+                            student_answer=ans.recognized_answer or "",
+                            criteria=criteria,
+                            max_score=max_score,
+                        )
+                    ans.score = result.get("score", 0)
+                    ans.ai_feedback = result.get("feedback", "")
+                    ans.grading_status = models.GradingStatus.AI_GRADED
+                    graded += 1
+                    _grade_tasks[task_id]["graded"] = graded
+                except Exception as e:
+                    failed += 1
+                    _grade_tasks[task_id]["failed"] = failed
+                    print(f"[ai_grade_all_exam] ans={ans.id} 失败: {e}")
+
+        await asyncio.gather(*[_grade_one(ans, ms, qt, cr) for ans, ms, qt, cr in ans_params])
+        db.flush()
+
+        # 重算每个受影响学生的总分和状态
+        affected_se_ids = {a.student_exam_id for a in pending}
+        for se_id in affected_se_ids:
+            se = db.query(models.StudentExam).filter(models.StudentExam.id == se_id).first()
+            if not se:
+                continue
+            all_ans = db.query(models.StudentAnswer).filter(
+                models.StudentAnswer.student_exam_id == se_id
+            ).all()
+            se.total_score = sum(a.score for a in all_ans if a.score is not None)
+            if all(a.grading_status != models.GradingStatus.PENDING for a in all_ans):
+                se.grading_status = models.GradingStatus.COMPLETED
+
+        db.commit()
+        _grade_tasks[task_id].update({"status": "completed", "graded": graded, "failed": failed})
+    except Exception as e:
+        _grade_tasks[task_id].update({"status": "failed", "error": str(e)})
+        db.rollback()
+    finally:
+        db.close()
+
+
+@router.post("/exam/{exam_id}/ai-grade-all", response_model=dict)
+async def ai_grade_all_exam_start(
+    exam_id: int,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+):
+    """启动后台任务批改该考试所有学生的填空/主观题，立即返回 task_id。"""
+    if not db.query(models.Exam).filter(models.Exam.id == exam_id).first():
+        raise HTTPException(status_code=404, detail="考试不存在")
+    task_id = f"grade_exam_{exam_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    _grade_tasks[task_id] = {"status": "running", "graded": 0, "total": 0, "failed": 0, "exam_id": exam_id}
+    background_tasks.add_task(_run_grade_all_exam, exam_id, task_id)
+    return {"task_id": task_id, "status": "started"}
+
+
+@router.get("/exam/{exam_id}/ai-grade-all/status", response_model=dict)
+def ai_grade_all_exam_status(exam_id: int):
+    """查询该考试最新批改任务进度。"""
+    matching = [(k, v) for k, v in _grade_tasks.items() if v.get("exam_id") == exam_id]
+    if not matching:
+        return {"status": "not_found", "graded": 0, "total": 0, "failed": 0}
+    _, state = sorted(matching, key=lambda x: x[0])[-1]
+    return state
 
 
 @router.patch("/student-exam/{student_exam_id}/info", response_model=dict)

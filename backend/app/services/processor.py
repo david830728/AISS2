@@ -69,9 +69,31 @@ class ExamProcessor:
                 raise ValueError(f"无法读取图像文件: {scan_file.file_path}")
             raw_pages = [raw]
 
-        # 从文件名解析：id_prefix=试卷编号（用作考号匹配键），file_side=A/B
+        # 第一步：从文件名解析
         id_prefix, file_side = self._parse_sheet_filename(scan_file.file_name or '')
         print(f"[process_scan] 文件={scan_file.file_name}  面序={file_side}  考号前缀={id_prefix}")
+
+        # 第二步：文件名解析失败时，从二维码解析
+        qr_data = None
+        if file_side is None or id_prefix is None:
+            # 先做图像矫正
+            raw = self.img_proc.load_image(scan_file.file_path)
+            raw_pages = [raw] if raw is not None else []
+            if raw_pages:
+                img_for_qr = self.img_proc.align_by_markers(raw_pages[0])
+                qr_data = self.img_proc.detect_page_info(img_for_qr)
+                if qr_data and qr_data.get("raw"):   # 仅真正识别成功时才赋值
+                    if file_side is None:
+                        file_side = qr_data.get("page_label")
+                    if id_prefix is None:
+                        id_prefix = qr_data.get("student_number")
+                print(f"[process_scan] 文件名解析失败，从二维码获取: id_prefix={id_prefix} file_side={file_side}")
+
+        # 尽早写入卷面编号（文件名或 QR 解析结果均在此处落库）
+        if file_side:
+            scan_file.detected_page_side = file_side
+        if id_prefix and not scan_file.detected_student_id:
+            scan_file.detected_student_id = id_prefix
 
         tc = exam.template_config or {}
         exam_paper_size: Optional[str] = tc.get("paper_size") if isinstance(tc, dict) else None
@@ -85,7 +107,20 @@ class ExamProcessor:
             if img.shape[1] not in {2480, 3508, 4961}:
                 img = self.img_proc.normalize(img)
 
-            page_label = file_side if file_side is not None else self.img_proc.detect_page_label(img)
+            if file_side is not None:
+                page_label = file_side
+                qr_info: dict = {}
+            else:
+                qr_info = self.img_proc.detect_page_info(img)
+                page_label = qr_info["page_label"]
+                # QR 中的学号覆盖文件名前缀
+                if qr_info.get("student_number") and not id_prefix:
+                    id_prefix = qr_info["student_number"]
+
+            # 记录本张扫描图的卷面信息（A/B面均记录，供监控页展示）
+            scan_file.detected_page_side = page_label
+            if id_prefix:
+                scan_file.detected_student_id = scan_file.detected_student_id or id_prefix
 
             # ── 临时调试：保存带区域标注框的对齐图 ──────────────────────────
             try:
@@ -121,28 +156,38 @@ class ExamProcessor:
                 )
 
             if page_label == "A":
-                # A面：识别考生信息
-                student_name, student_number, class_name = self._detect_student_info(img)
+                # student_number：QR/文件名最可靠，直接使用 id_prefix
+                student_number = id_prefix
+                student_name, class_name = None, None
+
+                # 优先从 Student 名单（Excel上传）查姓名和班级
+                if id_prefix:
+                    _excel_name, _, _excel_cls = self._detect_student_info_from_qr(
+                        {'student_number': id_prefix}, exam.id)
+                    student_name = _excel_name
+                    class_name   = _excel_cls
+
+                # 若名单中查不到或缺字段，OCR 兜底
+                if not student_name or not class_name or not student_number:
+                    _ocr_name, _ocr_num, _ocr_cls = self._detect_student_info(img)
+                    student_number = student_number or _ocr_num
+                    student_name   = student_name   or _ocr_name
+                    class_name     = class_name     or _ocr_cls
                 scan_file.detected_student_name = student_name
                 scan_file.detected_student_id   = student_number
-                # 文件名前缀优先于 OCR 考号（保证正反面匹配一致）
-                if id_prefix:
-                    student_number = id_prefix
                 if student_exam is None:
                     student_exam = models.StudentExam(
                         exam_id=exam.id,
                         scan_file_id=scan_file.id,
-                        student_name=student_name or f"未识别_{id_prefix}",
+                        student_name=student_name or None,
                         student_number=student_number,
                         class_name=class_name or exam.class_name,
                         grading_status=models.GradingStatus.PENDING,
                     )
                     self.db.add(student_exam)
                     self.db.flush()
-                    self.db.commit()
                     print(f"[process_scan] 新建 SE id={student_exam.id}  考号={student_number}")
                 else:
-                    # 反面已先处理，用正面信息补全
                     student_exam.student_name = student_name or student_exam.student_name
                     student_exam.class_name   = class_name   or student_exam.class_name or exam.class_name
                     student_exam.scan_file_id = scan_file.id
@@ -151,18 +196,28 @@ class ExamProcessor:
             else:
                 # B面：不识别考生信息，找已有 SE 或创建占位
                 if student_exam is None:
-                    student_exam = models.StudentExam(
-                        exam_id=exam.id,
-                        scan_file_id=scan_file.id,
-                        student_name=f"待补全_{id_prefix}",
-                        student_number=id_prefix,
-                        class_name=exam.class_name,
-                        grading_status=models.GradingStatus.PENDING,
-                    )
-                    self.db.add(student_exam)
-                    self.db.flush()
-                    self.db.commit()
-                    print(f"[process_scan] B面先到，新建占位 SE id={student_exam.id}")
+                    if id_prefix:
+                        student_exam = (
+                            self.db.query(models.StudentExam)
+                            .filter_by(exam_id=exam.id, student_number=id_prefix)
+                            .first()
+                        )
+                    if student_exam is None:
+                        student_exam = models.StudentExam(
+                            exam_id=exam.id,
+                            scan_file_id=scan_file.id,
+                            student_name=f"待补全_{id_prefix}",
+                            student_number=id_prefix,
+                            class_name=exam.class_name,
+                            grading_status=models.GradingStatus.PENDING,
+                        )
+                        self.db.add(student_exam)
+                        self.db.flush()
+                        print(f"[process_scan] B面先到，新建占位 SE id={student_exam.id}")
+                    else:
+                        student_exam.scan_file_id = scan_file.id
+                        self.db.flush()
+                        print(f"[process_scan] B面找到已有 SE id={student_exam.id}")
                 else:
                     print(f"[process_scan] B面找到已有 SE id={student_exam.id}")
 
@@ -264,13 +319,15 @@ class ExamProcessor:
             student_exam_id=student_exam.id
         ).all()
         student_exam.total_score    = sum(a.score or 0.0 for a in all_ans)
+        has_pending = any(a.grading_status == models.GradingStatus.PENDING for a in all_ans)
         student_exam.grading_status = (
-            models.GradingStatus.PENDING if not all_graded
+            models.GradingStatus.PENDING if has_pending
             else models.GradingStatus.COMPLETED
         )
 
         scan_file.status       = models.ScanStatus.COMPLETED
         scan_file.processed_at = datetime.utcnow()
+        scan_file.page_count   = len(raw_pages)
         self.db.commit()
         self.db.refresh(student_exam)
 
@@ -294,6 +351,23 @@ class ExamProcessor:
         region_img = self.img_proc.extract_region(img, table_region)
         print(f"[vision] 选择题整体截图尺寸: {region_img.shape}  题号={q_numbers}")
         return await self.vision.recognize_choices_by_vision(region_img, q_numbers)
+
+    def _detect_student_info_from_qr(self, qr_data: dict, exam_id: int):
+        """
+        从 QR 数据查 Student 名单表，返回 (student_name, student_number, class_name)。
+        qr_data 为空或无 student_number 时返回 (None, None, None)。
+        """
+        student_number = qr_data.get("student_number")
+        if not student_number:
+            return None, None, None
+        student = (
+            self.db.query(models.Student)
+            .filter_by(exam_id=exam_id, student_number=student_number)
+            .first()
+        )
+        if student:
+            return student.student_name, student.student_number, student.class_name
+        return None, student_number, None
 
     def _detect_student_info(self, img):
         """A面专用：从硬编码地址 STUDENT_INFO_REGION 识别考号/姓名/班级。"""

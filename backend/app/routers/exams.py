@@ -4,13 +4,14 @@ from typing import List, Optional
 import os
 from app.database import get_db
 from app import models, schemas
+from app.auth import get_current_user
 
 TEMPLATES_DIR = os.path.join(
     os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "templates"
 )
 os.makedirs(TEMPLATES_DIR, exist_ok=True)
 
-router = APIRouter(prefix="/api/exams", tags=["exams"])
+router = APIRouter(prefix="/api/exams", tags=["exams"], dependencies=[Depends(get_current_user)])
 
 
 @router.get("/", response_model=List[schemas.ExamSummary])
@@ -97,8 +98,16 @@ def update_exam(exam_id: int, exam_in: schemas.ExamUpdate, db: Session = Depends
     exam = db.query(models.Exam).filter(models.Exam.id == exam_id).first()
     if not exam:
         raise HTTPException(status_code=404, detail="考试不存在")
-    for field, value in exam_in.model_dump(exclude_unset=True).items():
+    updates = exam_in.model_dump(exclude_unset=True)
+    for field, value in updates.items():
         setattr(exam, field, value)
+    # 若更新了班级，回填该考试下 class_name 为空的 StudentExam 记录
+    new_class = updates.get('class_name')
+    if new_class:
+        db.query(models.StudentExam)\
+          .filter(models.StudentExam.exam_id == exam_id,
+                  models.StudentExam.class_name == None)\
+          .update({'class_name': new_class})
     db.commit()
     db.refresh(exam)
     return exam
@@ -109,6 +118,28 @@ def delete_exam(exam_id: int, db: Session = Depends(get_db)):
     exam = db.query(models.Exam).filter(models.Exam.id == exam_id).first()
     if not exam:
         raise HTTPException(status_code=404, detail="考试不存在")
+    # 按 FK 依赖顺序手动删除，避免 MySQL FK 约束冲突
+    # 1. 先删 StudentAnswer（依赖 StudentExam 和 ExamQuestion）
+    se_ids = [row.id for row in db.query(models.StudentExam.id).filter_by(exam_id=exam_id).all()]
+    if se_ids:
+        db.query(models.StudentAnswer).filter(
+            models.StudentAnswer.student_exam_id.in_(se_ids)
+        ).delete(synchronize_session="fetch")
+    # 2. 删 StudentExam（依赖 ScanFile 和 Student）
+    db.query(models.StudentExam).filter_by(exam_id=exam_id).delete(synchronize_session="fetch")
+    # 3. 删 Student
+    db.query(models.Student).filter_by(exam_id=exam_id).delete(synchronize_session="fetch")
+    # 4. 删 ScanFile
+    db.query(models.ScanFile).filter_by(exam_id=exam_id).delete(synchronize_session="fetch")
+    # 5. 先删 ExamQuestion 下的 StudentAnswer（question_id FK，防止双重引用残留）
+    q_ids = [row.id for row in db.query(models.ExamQuestion.id).filter_by(exam_id=exam_id).all()]
+    if q_ids:
+        db.query(models.StudentAnswer).filter(
+            models.StudentAnswer.question_id.in_(q_ids)
+        ).delete(synchronize_session="fetch")
+    # 6. 删 ExamQuestion
+    db.query(models.ExamQuestion).filter_by(exam_id=exam_id).delete(synchronize_session="fetch")
+    # 7. 最后删 Exam 本体
     db.delete(exam)
     db.commit()
 

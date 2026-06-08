@@ -372,76 +372,156 @@ class ImageProcessor:
             pass
         return None
 
-    def detect_page_label(self, img: np.ndarray) -> str:
-        """
-        在图像顶部居中区域检测 QR 码，内容格式：{考试ID}_{面序号}，例如 '42_A'。
-        尝试多种预处理方式提升识别率，失败默认返回 'A'。
-        """
-        # 裁剪二维码区域（考生信息栏右端，与前端生成位置对应）
-        # 信息栏 y:0.04~0.12，QR 位于右端 x≈0.83~0.95
-        qr_region = self.extract_region(
-            img, {"x": 0.80, "y": 0.025, "width": 0.18, "height": 0.12}
-        )
-        print(f"[detect_page_label] 二维码裁剪区域尺寸: {qr_region.shape}")
+    def _decode_qr(self, img: np.ndarray) -> str:
+        """尝试多种方式解码二维码，返回内容字符串或None"""
+        attempts = [img]
 
-        def _try_label(data: str) -> str | None:
-            parts = data.split("_")
-            if len(parts) >= 2:
+        if len(img.shape) == 3:
+            gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        else:
+            gray = img
+        _, binary = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)
+        binary_bgr = cv2.cvtColor(binary, cv2.COLOR_GRAY2BGR)
+        attempts.append(binary_bgr)
+
+        enlarged = cv2.resize(img, None, fx=2, fy=2, interpolation=cv2.INTER_CUBIC)
+        attempts.append(enlarged)
+
+        for attempt in attempts:
+            # OpenCV WeChat解码器
+            try:
+                wechat = cv2.wechat_qrcode_WeChatQRCode()
+                texts, _ = wechat.detectAndDecode(attempt)
+                if texts and texts[0]:
+                    return texts[0]
+            except Exception:
+                pass
+
+            # OpenCV基础解码器
+            try:
+                detector = cv2.QRCodeDetector()
+                data, _, _ = detector.detectAndDecode(attempt)
+                if data:
+                    return data
+            except Exception:
+                pass
+
+            # pyzbar
+            try:
+                from pyzbar import pyzbar
+                decoded = pyzbar.decode(attempt)
+                if decoded:
+                    return decoded[0].data.decode("utf-8")
+            except Exception:
+                pass
+
+        return None
+
+    def detect_page_label_full(self, img: np.ndarray) -> dict:
+        """
+        识别二维码，返回完整信息。
+        格式：{exam_id}_{student_number}_{page_label}
+        返回：{"exam_id": "2", "student_number": "20230128", "page_label": "A"}
+        识别失败返回 None
+        """
+        qr_region = self.extract_region(img,
+            {"x": 0.38, "y": 0.005, "width": 0.24, "height": 0.08})
+
+        content = self._decode_qr(qr_region)
+        if not content:
+            # 尝试全图识别
+            content = self._decode_qr(img)
+
+        if content:
+            parts = content.split("_")
+            if len(parts) >= 3:
+                label = parts[2].upper()
+                if label in {"A", "B", "C", "D"}:
+                    print(f"[detect_page_label_full] 识别成功: {content}")
+                    return {
+                        "exam_id": parts[0],
+                        "student_number": parts[1],
+                        "page_label": label,
+                        "raw": content
+                    }
+
+        print(f"[detect_page_label_full] 识别失败")
+        return None
+
+    def detect_page_info(self, img: np.ndarray) -> dict:
+        """
+        在图像顶部居中区域检测 QR 码。
+        支持两种格式：
+          新格式：{exam_id}_{student_number}_{page_label}  → "2_20230128_A"
+          旧格式：{exam_id}_{page_label}                   → "2_A"
+        返回：
+          {"exam_id": str|None, "student_number": str|None,
+           "page_label": str, "raw": str|None}
+        识别失败时返回 {"page_label": "A", "exam_id": None, "student_number": None, "raw": None}
+        """
+        FAIL = {"page_label": "A", "exam_id": None, "student_number": None, "raw": None}
+
+        qr_region = self.extract_region(
+            img, {"x": 0.83, "y": 0.02, "width": 0.16, "height": 0.12}
+        )
+        print(f"[detect_page_info] 二维码裁剪区域尺寸: {qr_region.shape}")
+
+        def _parse(raw: str) -> dict | None:
+            parts = raw.strip().split("_")
+            if len(parts) >= 3:
                 label = parts[-1].upper()
                 if label in {"A", "B", "C", "D"}:
-                    return label
+                    return {"exam_id": parts[0], "student_number": parts[1],
+                            "page_label": label, "raw": raw}
+            if len(parts) == 2:
+                label = parts[-1].upper()
+                if label in {"A", "B", "C", "D"}:
+                    return {"exam_id": parts[0], "student_number": None,
+                            "page_label": label, "raw": raw}
             return None
 
-        # ── pyzbar 方式 ──────────────────────────────────────────────────────
-        try:
-            from pyzbar import pyzbar
-            attempts = [qr_region]
-            gray = cv2.cvtColor(qr_region, cv2.COLOR_BGR2GRAY)
-            _, binary = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)
-            attempts.append(binary)
-            scale = max(1.0, 200 / min(qr_region.shape[:2]))
-            if scale > 1.0:
-                enlarged = cv2.resize(qr_region, None, fx=scale, fy=scale,
-                                      interpolation=cv2.INTER_CUBIC)
-                attempts.append(enlarged)
-            for attempt_img in attempts:
-                decoded = pyzbar.decode(attempt_img)
+        def _try_decode(img_arr) -> dict | None:
+            # pyzbar
+            try:
+                from pyzbar import pyzbar
+                decoded = pyzbar.decode(img_arr)
                 if decoded:
                     content = decoded[0].data.decode("utf-8")
-                    print(f"[detect_page_label] pyzbar识别到: {content}")
-                    lbl = _try_label(content)
-                    if lbl:
-                        return lbl
-        except ImportError:
-            pass
-        except Exception as e:
-            print(f"[detect_page_label] pyzbar异常: {e}")
-
-        # ── OpenCV 内置解码器备选 ────────────────────────────────────────────
-        try:
-            qr_detector = cv2.QRCodeDetector()
-            gray = cv2.cvtColor(qr_region, cv2.COLOR_BGR2GRAY)
-            _, binary_qr = cv2.threshold(gray, 0, 255,
-                                          cv2.THRESH_BINARY | cv2.THRESH_OTSU)
-            binary_bgr = cv2.cvtColor(binary_qr, cv2.COLOR_GRAY2BGR)
-            # 原始、二值化、2×放大 共四种尝试
-            up_scale = max(2.0, 400 / min(qr_region.shape[:2]))
-            enlarged_orig = cv2.resize(qr_region,   None, fx=up_scale, fy=up_scale,
-                                       interpolation=cv2.INTER_CUBIC)
-            enlarged_bin  = cv2.resize(binary_bgr,  None, fx=up_scale, fy=up_scale,
-                                       interpolation=cv2.INTER_NEAREST)
-            for attempt in [qr_region, binary_bgr, enlarged_orig, enlarged_bin]:
-                data, _, _ = qr_detector.detectAndDecode(attempt)
+                    print(f"[detect_page_info] pyzbar: {content}")
+                    return _parse(content)
+            except ImportError:
+                pass
+            except Exception as e:
+                print(f"[detect_page_info] pyzbar异常: {e}")
+            # OpenCV
+            try:
+                det = cv2.QRCodeDetector()
+                data, _, _ = det.detectAndDecode(img_arr)
                 if data:
-                    print(f"[detect_page_label] OpenCV识别到: {data}")
-                    lbl = _try_label(data)
-                    if lbl:
-                        return lbl
-        except Exception as e:
-            print(f"[detect_page_label] OpenCV解码异常: {e}")
+                    print(f"[detect_page_info] OpenCV: {data}")
+                    return _parse(data)
+            except Exception as e:
+                print(f"[detect_page_info] OpenCV异常: {e}")
+            return None
 
-        print(f"[detect_page_label] 未识别到有效面序号，默认使用 'A'")
-        return "A"
+        gray = cv2.cvtColor(qr_region, cv2.COLOR_BGR2GRAY)
+        _, binary = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)
+        binary_bgr = cv2.cvtColor(binary, cv2.COLOR_GRAY2BGR)
+        up = max(2.0, 400 / max(1, min(qr_region.shape[:2])))
+        enlarged = cv2.resize(qr_region, None, fx=up, fy=up, interpolation=cv2.INTER_CUBIC)
+        enlarged_bin = cv2.resize(binary_bgr, None, fx=up, fy=up, interpolation=cv2.INTER_NEAREST)
+
+        for attempt in [qr_region, binary_bgr, enlarged, enlarged_bin]:
+            result = _try_decode(attempt)
+            if result:
+                return result
+
+        print("[detect_page_info] 未识别到有效二维码，默认 A 面")
+        return FAIL
+
+    def detect_page_label(self, img: np.ndarray) -> str:
+        """向后兼容包装，返回面序号字符串。"""
+        return self.detect_page_info(img)["page_label"]
     def find_answer_areas_by_template(
         self,
         img: np.ndarray,

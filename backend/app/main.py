@@ -4,8 +4,10 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 import os
 
+from fastapi import Depends
 from app.database import init_db, migrate_db
-from app.routers import exams, scans, results, reports, settings
+from app.routers import exams, scans, results, reports, settings, students, auth
+from app.auth import get_current_user
 
 app = FastAPI(
     title="乐清市白石中学 AI阅卷系统",
@@ -21,11 +23,13 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+app.include_router(auth.router)
 app.include_router(exams.router)
 app.include_router(scans.router)
 app.include_router(results.router)
 app.include_router(reports.router)
 app.include_router(settings.router)
+app.include_router(students.router)
 
 ANSWER_IMAGES_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "answer_images")
 os.makedirs(ANSWER_IMAGES_DIR, exist_ok=True)
@@ -33,6 +37,9 @@ app.mount("/answer_images", StaticFiles(directory=ANSWER_IMAGES_DIR), name="answ
 
 SCANS_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "scans")
 os.makedirs(SCANS_DIR, exist_ok=True)
+
+ANSWER_SHEETS_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "answer_sheets")
+os.makedirs(ANSWER_SHEETS_DIR, exist_ok=True)
 
 TEMPLATES_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "templates")
 os.makedirs(TEMPLATES_DIR, exist_ok=True)
@@ -43,6 +50,9 @@ app.mount("/templates", StaticFiles(directory=TEMPLATES_DIR), name="templates")
 def startup():
     init_db()
     migrate_db()
+    from app.services.file_watcher import get_process_queue
+    get_process_queue().start()
+    print("[startup] 串行处理队列已启动")
 
 
 @app.get("/api/health")
@@ -51,7 +61,7 @@ def health():
 
 
 @app.get("/api/dashboard")
-def dashboard(db=None):
+def dashboard(db=None, _user: dict = Depends(get_current_user)):
     from app.database import SessionLocal
     from app import models
     db = SessionLocal()

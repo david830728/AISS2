@@ -169,7 +169,7 @@ class ReportGenerator:
 
         student_exams = self.db.query(models.StudentExam).filter(
             models.StudentExam.exam_id == exam.id
-        ).order_by(models.StudentExam.total_score.desc().nullslast()).all()
+        ).order_by(models.StudentExam.total_score.desc()).all()
 
         status_map = {
             "pending": "待评分",

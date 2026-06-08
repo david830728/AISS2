@@ -5,7 +5,7 @@ import {
   Users, CheckCircle, Clock, BookOpen, FileDown, Bug,
 } from 'lucide-react'
 import toast from 'react-hot-toast'
-import { examApi, scanApi, reportsApi, Exam, ScanFile } from '../api'
+import { examApi, scanApi, reportsApi, studentsApi, AnswerSheetStatus, Exam, ScanFile } from '../api'
 import AnswerSheetDebugView from '../components/AnswerSheetDebugView'
 import type { SheetQuestion } from '../components/AnswerSheetPreview'
 
@@ -31,6 +31,8 @@ export default function ExamDetail() {
   const [uploading, setUploading] = useState(false)
   const [activeTab, setActiveTab] = useState<'questions' | 'scans'>('questions')
   const [debugOpen, setDebugOpen] = useState(false)
+  const [sheetStatus, setSheetStatus] = useState<AnswerSheetStatus | null>(null)
+  const [generatingPdf, setGeneratingPdf] = useState(false)
 
   const load = async () => {
     if (!id) return
@@ -47,6 +49,30 @@ export default function ExamDetail() {
   }
 
   useEffect(() => { load() }, [id])
+
+  useEffect(() => {
+    if (!id) return
+    studentsApi.sheetStatus(Number(id)).then(setSheetStatus).catch(() => {})
+  }, [id])
+
+  const handleGeneratePdf = async (layout = 'by_student') => {
+    if (!id) return
+    setGeneratingPdf(true)
+    try {
+      const r = await studentsApi.generatePdf(Number(id), layout)
+      toast.success(`答题卡PDF生成中，共 ${r.student_count} 份...`)
+      // 轮询直到生成完成
+      const poll = setInterval(async () => {
+        const s = await studentsApi.sheetStatus(Number(id))
+        setSheetStatus(s)
+        if (s.has_pdf) { clearInterval(poll); setGeneratingPdf(false) }
+      }, 2000)
+      setTimeout(() => { clearInterval(poll); setGeneratingPdf(false) }, 60000)
+    } catch (err: unknown) {
+      toast.error((err as Error).message)
+      setGeneratingPdf(false)
+    }
+  }
 
   const handleActivate = async () => {
     if (!exam) return
@@ -128,6 +154,46 @@ export default function ExamDetail() {
           )}
         </div>
       </div>
+
+      {/* Answer Sheet PDF Card */}
+      {sheetStatus && (
+        <div className="card flex items-center gap-4 py-4 border-blue-100 bg-blue-50/40">
+          <div className="w-9 h-9 rounded-lg bg-blue-100 flex items-center justify-center flex-shrink-0">
+            <FileDown className="w-5 h-5 text-blue-600" />
+          </div>
+          <div className="flex-1">
+            {sheetStatus.student_count === 0 ? (
+              <p className="text-sm text-gray-500">
+                尚无考生名单，请在
+                <button onClick={() => navigate(`/exams/${id}/edit`)} className="text-blue-600 underline mx-1">编辑页</button>
+                上传名单后生成答题卡
+              </p>
+            ) : sheetStatus.has_pdf ? (
+              <div className="flex items-center gap-3">
+                <p className="text-sm text-gray-700">答题卡PDF已生成（共 {sheetStatus.student_count} 份）</p>
+                <a href={studentsApi.downloadUrl(Number(id))} target="_blank" rel="noreferrer"
+                  className="btn-primary text-xs py-1 px-3">
+                  <FileDown className="w-3.5 h-3.5" /> 下载PDF
+                </a>
+                <button onClick={() => handleGeneratePdf()} disabled={generatingPdf}
+                  className="btn-secondary text-xs py-1 px-3">
+                  {generatingPdf ? '生成中...' : '重新生成'}
+                </button>
+              </div>
+            ) : (
+              <div className="flex items-center gap-3">
+                <p className="text-sm text-gray-700">已有 {sheetStatus.student_count} 名考生，答题卡尚未生成</p>
+                <button onClick={() => handleGeneratePdf()} disabled={generatingPdf}
+                  className="btn-primary text-xs py-1 px-3">
+                  {generatingPdf ? '生成中...' : '生成答题卡PDF'}
+                </button>
+                <button onClick={() => handleGeneratePdf('by_side')} disabled={generatingPdf}
+                  className="btn-secondary text-xs py-1 px-3">按面排列</button>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* Stats Cards */}
       <div className="grid grid-cols-4 gap-4">
@@ -277,7 +343,7 @@ export default function ExamDetail() {
                   <tr className="border-b border-gray-100">
                     <th className="table-header">文件名</th>
                     <th className="table-header">大小</th>
-                    <th className="table-header">识别学生</th>
+                    <th className="table-header">卷面编号</th>
                     <th className="table-header text-center">状态</th>
                     <th className="table-header">上传时间</th>
                     <th className="table-header">错误信息</th>
@@ -292,8 +358,19 @@ export default function ExamDetail() {
                         <td className="table-cell text-gray-500 text-xs">
                           {sf.file_size ? `${(sf.file_size / 1024).toFixed(1)} KB` : '—'}
                         </td>
-                        <td className="table-cell">
-                          {sf.detected_student_name || sf.detected_student_id || '—'}
+                        <td className="table-cell text-sm">
+                          {sf.detected_student_id ? (
+                            <span className="font-mono">
+                              {sf.detected_student_id}
+                              {sf.detected_page_side && (
+                                <span className={`ml-1.5 px-1.5 py-0.5 rounded text-xs font-bold ${
+                                  sf.detected_page_side === 'A'
+                                    ? 'bg-blue-100 text-blue-700'
+                                    : 'bg-orange-100 text-orange-700'
+                                }`}>{sf.detected_page_side}面</span>
+                              )}
+                            </span>
+                          ) : '—'}
                         </td>
                         <td className="table-cell text-center">
                           <span className={`badge ${ss.color}`}>{ss.label}</span>

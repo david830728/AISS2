@@ -1,5 +1,6 @@
 import asyncio
 import os
+import queue
 import threading
 import time
 from typing import Optional, Dict, Any
@@ -16,6 +17,55 @@ _watcher_status: Dict[str, Any] = {
     "last_check": None,
 }
 SUPPORTED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".tiff", ".tif", ".bmp", ".pdf"}
+
+
+class FileProcessQueue:
+    """全局串行处理队列，确保同一时间只有一个文件在处理"""
+
+    def __init__(self):
+        self._queue = queue.Queue()
+        self._worker_thread = None
+        self._running = False
+
+    def start(self):
+        self._running = True
+        self._worker_thread = threading.Thread(
+            target=self._worker, daemon=True
+        )
+        self._worker_thread.start()
+        print("[FileProcessQueue] 串行处理队列已启动")
+
+    def stop(self):
+        self._running = False
+
+    def add(self, task_fn, *args, **kwargs):
+        """添加处理任务到队列"""
+        self._queue.put((task_fn, args, kwargs))
+        print(f"[FileProcessQueue] 任务入队，当前队列长度={self._queue.qsize()}")
+
+    def _worker(self):
+        while self._running:
+            try:
+                task_fn, args, kwargs = self._queue.get(timeout=1)
+                print(f"[FileProcessQueue] 开始处理任务，剩余={self._queue.qsize()}")
+                try:
+                    task_fn(*args, **kwargs)
+                except Exception as e:
+                    print(f"[FileProcessQueue] 任务处理失败: {e}")
+                finally:
+                    self._queue.task_done()
+                    # 每个文件处理完后等待1秒再处理下一个
+                    time.sleep(1)
+            except queue.Empty:
+                continue
+
+
+# 全局单例队列
+_process_queue = FileProcessQueue()
+
+
+def get_process_queue() -> FileProcessQueue:
+    return _process_queue
 
 
 def _auto_process(sf_id: int, exam_id: int) -> None:
@@ -100,15 +150,13 @@ def start_watcher(scan_dir: str, exam_id: int, db_factory=None):
                         db.add(sf)
                         _watcher_status["files_detected"] += 1
                 db.commit()
-                # Auto-process all newly registered startup files
+                # Auto-process all newly registered startup files via queue
                 pending = db.query(models.ScanFile).filter(
                     models.ScanFile.exam_id == exam_id,
                     models.ScanFile.status == models.ScanStatus.PENDING,
                 ).all()
                 for sf in pending:
-                    threading.Thread(
-                        target=_auto_process, args=(sf.id, exam_id), daemon=True
-                    ).start()
+                    get_process_queue().add(_auto_process, sf.id, exam_id)
             except Exception:
                 pass
             finally:
@@ -147,10 +195,8 @@ def start_watcher(scan_dir: str, exam_id: int, db_factory=None):
                             db.add(sf)
                             db.commit()
                             _watcher_status["files_detected"] += 1
-                            # Auto-process immediately
-                            threading.Thread(
-                                target=_auto_process, args=(sf.id, exam_id), daemon=True
-                            ).start()
+                            # Auto-process immediately via queue
+                            get_process_queue().add(_auto_process, sf.id, exam_id)
                         db.close()
                     except Exception:
                         pass

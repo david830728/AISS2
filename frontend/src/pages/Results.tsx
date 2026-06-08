@@ -1,6 +1,6 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
-import { ArrowLeft, Search, FileDown, BarChart2, Eye, Trash2, GitMerge } from 'lucide-react'
+import { ArrowLeft, Search, FileDown, BarChart2, Eye, Trash2, GitMerge, Sparkles } from 'lucide-react'
 import toast from 'react-hot-toast'
 import { resultsApi, examApi, reportsApi, StudentExamSummary, Exam } from '../api'
 
@@ -12,6 +12,8 @@ const GRADING_STATUS: Record<string, { label: string; color: string }> = {
   completed:      { label: '已完成', color: 'bg-green-100 text-green-700' },
 }
 
+interface GradeProgress { running: boolean; graded: number; total: number; failed: number; done: boolean }
+
 export default function Results() {
   const { examId } = useParams()
   const navigate = useNavigate()
@@ -19,9 +21,12 @@ export default function Results() {
   const [results, setResults] = useState<StudentExamSummary[]>([])
   const [search, setSearch] = useState('')
   const [loading, setLoading] = useState(true)
+  const [grade, setGrade] = useState<GradeProgress>({ running: false, graded: 0, total: 0, failed: 0, done: false })
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
   const load = async () => {
     if (!examId) return
+    console.log('[Results] 加载成绩，examId:', examId, 'URL:', window.location.pathname)
     setLoading(true)
     try {
       const [e, r] = await Promise.all([
@@ -36,6 +41,37 @@ export default function Results() {
   }
 
   useEffect(() => { load() }, [examId])
+
+  useEffect(() => () => { if (pollRef.current) clearInterval(pollRef.current) }, [])
+
+  const handleGradeAll = async () => {
+    if (!examId || grade.running) return
+    try {
+      await resultsApi.aiGradeAllExam(Number(examId))
+      setGrade({ running: true, graded: 0, total: 0, failed: 0, done: false })
+      pollRef.current = setInterval(async () => {
+        try {
+          const s = await resultsApi.aiGradeAllExamStatus(Number(examId))
+          setGrade(prev => ({ ...prev, graded: s.graded, total: s.total, failed: s.failed }))
+          if (s.status === 'completed' || s.status === 'failed') {
+            clearInterval(pollRef.current!)
+            pollRef.current = null
+            const ok = s.status === 'completed'
+            setGrade({ running: false, graded: s.graded, total: s.total, failed: s.failed, done: true })
+            toast[ok ? 'success' : 'error'](
+              ok ? `批改完成，共 ${s.graded} 题，失败 ${s.failed} 题` : 'AI批改任务失败'
+            )
+            if (ok) {
+              await load()
+              setTimeout(() => setGrade(g => ({ ...g, done: false })), 3000)
+            }
+          }
+        } catch { clearInterval(pollRef.current!); pollRef.current = null }
+      }, 2000)
+    } catch (err: unknown) {
+      toast.error((err as Error).message)
+    }
+  }
 
   const handleMerge = async () => {
     if (!examId) return
@@ -96,7 +132,34 @@ export default function Results() {
             </p>
           </div>
         </div>
-        <div className="flex gap-2">
+        <div className="flex gap-2 flex-wrap">
+          {/* 一键AI批改 */}
+          <button
+            onClick={handleGradeAll}
+            disabled={grade.running}
+            className={`btn-primary flex items-center gap-1.5 text-sm ${
+              grade.done ? '!bg-green-500 hover:!bg-green-600' : ''
+            }`}
+          >
+            <Sparkles className="w-4 h-4" />
+            {grade.running
+              ? `批改中... ${grade.graded}/${grade.total || '?'}`
+              : grade.done
+              ? '批改完成'
+              : '一键AI批改所有试卷'}
+          </button>
+          {/* 进度条 */}
+          {grade.running && grade.total > 0 && (
+            <div className="flex items-center gap-2 self-center">
+              <div className="w-32 h-2 bg-gray-200 rounded-full overflow-hidden">
+                <div
+                  className="h-full bg-blue-500 rounded-full transition-all"
+                  style={{ width: `${Math.round(grade.graded / grade.total * 100)}%` }}
+                />
+              </div>
+              <span className="text-xs text-gray-500">{Math.round(grade.graded / grade.total * 100)}%</span>
+            </div>
+          )}
           <button onClick={() => navigate(`/reports?exam_id=${examId}`)} className="btn-secondary">
             <BarChart2 className="w-4 h-4" /> 分析报告
           </button>

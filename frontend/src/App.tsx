@@ -1,8 +1,8 @@
-import { Routes, Route, NavLink, useLocation } from 'react-router-dom'
+import { Routes, Route, NavLink, Navigate, useLocation } from 'react-router-dom'
 import { Toaster } from 'react-hot-toast'
 import {
   LayoutDashboard, BookOpen, ScanLine, BarChart2,
-  FileText, Settings, GraduationCap,
+  Settings, GraduationCap, LogOut, UserCircle,
 } from 'lucide-react'
 import Dashboard from './pages/Dashboard'
 import ExamList from './pages/ExamList'
@@ -13,6 +13,7 @@ import Results from './pages/Results'
 import ResultDetail from './pages/ResultDetail'
 import Reports from './pages/Reports'
 import SettingsPage from './pages/Settings'
+import Login from './pages/Login'
 import { clsx } from 'clsx'
 
 const navItems = [
@@ -23,8 +24,22 @@ const navItems = [
   { to: '/settings', icon: Settings, label: '系统设置' },
 ]
 
-export default function App() {
+function PrivateRoute({ children }: { children: React.ReactNode }) {
+  const token = localStorage.getItem('token')
+  if (!token) return <Navigate to="/login" replace />
+  return <>{children}</>
+}
+
+function handleLogout() {
+  localStorage.removeItem('token')
+  localStorage.removeItem('user')
+  window.location.href = '/login'
+}
+
+function AppLayout() {
   const location = useLocation()
+  const user = JSON.parse(localStorage.getItem('user') || '{}')
+  const isAdmin = user.role === 'admin'
 
   return (
     <div className="flex h-screen bg-gray-50 overflow-hidden">
@@ -62,15 +77,29 @@ export default function App() {
                     : 'text-blue-100 hover:bg-white/10 hover:text-white'
                 )}
               >
-                <Icon className="w-4.5 h-4.5 w-5 h-5 flex-shrink-0" />
+                <Icon className="w-5 h-5 flex-shrink-0" />
                 {label}
               </NavLink>
             )
           })}
         </nav>
 
-        <div className="px-6 py-4 border-t border-blue-700/50">
-          <p className="text-blue-300 text-xs">Version 1.0.0</p>
+        {/* User info + logout */}
+        <div className="px-4 py-4 border-t border-blue-700/50 space-y-3">
+          <div className="flex items-center gap-2.5 px-2">
+            <UserCircle className="w-8 h-8 text-blue-300 flex-shrink-0" />
+            <div className="min-w-0">
+              <p className="text-white text-sm font-medium truncate">{user.name || user.username || '用户'}</p>
+              <p className="text-blue-300 text-xs">{isAdmin ? '管理员' : '教师'}</p>
+            </div>
+          </div>
+          <button
+            onClick={handleLogout}
+            className="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-blue-200 hover:bg-white/10 hover:text-white text-sm transition-all"
+          >
+            <LogOut className="w-4 h-4" />
+            退出登录
+          </button>
         </div>
       </aside>
 
@@ -92,5 +121,18 @@ export default function App() {
         </div>
       </main>
     </div>
+  )
+}
+
+export default function App() {
+  return (
+    <Routes>
+      <Route path="/login" element={<Login />} />
+      <Route path="/*" element={
+        <PrivateRoute>
+          <AppLayout />
+        </PrivateRoute>
+      } />
+    </Routes>
   )
 }

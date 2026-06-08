@@ -1,12 +1,13 @@
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 from app import schemas
 from app.services.ai_grader import load_ai_settings, save_ai_settings
+from app.auth import get_current_user, get_admin_user
 
 router = APIRouter(prefix="/api/settings", tags=["settings"])
 
 
 @router.get("/ai", response_model=dict)
-def get_ai_settings():
+def get_ai_settings(_user: dict = Depends(get_current_user)):
     s = load_ai_settings()
     s_masked = dict(s)
     if s_masked.get("api_key"):
@@ -16,7 +17,7 @@ def get_ai_settings():
 
 
 @router.put("/ai", response_model=dict)
-def update_ai_settings(data: dict):
+def update_ai_settings(data: dict, _user: dict = Depends(get_admin_user)):
     current = load_ai_settings()
     if data.get("api_key") and "****" in data["api_key"]:
         data["api_key"] = current.get("api_key", "")
@@ -26,7 +27,7 @@ def update_ai_settings(data: dict):
 
 
 @router.post("/ai/test", response_model=dict)
-async def test_ai_connection():
+async def test_ai_connection(_user: dict = Depends(get_current_user)):
     import httpx
     settings = load_ai_settings()
     if not settings.get("api_key"):

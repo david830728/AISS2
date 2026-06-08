@@ -1,15 +1,45 @@
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, Query
 from sqlalchemy.orm import Session
 from typing import List, Optional
-import os, shutil, uuid
+import os, shutil, uuid, asyncio
 from datetime import datetime
 from app.database import get_db
 from app import models, schemas
+from app.auth import get_current_user
 
-router = APIRouter(prefix="/api/scans", tags=["scans"])
+router = APIRouter(prefix="/api/scans", tags=["scans"], dependencies=[Depends(get_current_user)])
 
 UPLOAD_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "scans")
 os.makedirs(UPLOAD_DIR, exist_ok=True)
+
+
+def _auto_process(sf_id: int, exam_id: int) -> None:
+    """Run ExamProcessor on a single ScanFile in a dedicated thread."""
+    from app.database import SessionLocal
+    from app.services.processor import ExamProcessor
+
+    db = SessionLocal()
+    try:
+        sf = db.query(models.ScanFile).filter(models.ScanFile.id == sf_id).first()
+        exam = db.query(models.Exam).filter(models.Exam.id == exam_id).first()
+        if not sf or not exam:
+            return
+        sf.status = models.ScanStatus.PROCESSING
+        db.commit()
+        processor = ExamProcessor(db)
+        asyncio.run(processor.process_scan(sf, exam))
+    except Exception as e:
+        try:
+            db.rollback()
+            sf2 = db.query(models.ScanFile).filter(models.ScanFile.id == sf_id).first()
+            if sf2:
+                sf2.status = models.ScanStatus.FAILED
+                sf2.error_message = str(e)
+                db.commit()
+        except Exception:
+            pass
+    finally:
+        db.close()
 
 
 @router.get("/", response_model=List[schemas.ScanFileOut])
@@ -101,7 +131,7 @@ async def process_scan_file(scan_file_id: int, exam_id: int, db: Session = Depen
 
 @router.post("/process-batch", response_model=dict)
 async def process_batch(req: schemas.ProcessRequest, db: Session = Depends(get_db)):
-    from app.services.processor import ExamProcessor
+    from app.services.file_watcher import get_process_queue
     exam = db.query(models.Exam).filter(models.Exam.id == req.exam_id).first()
     if not exam:
         raise HTTPException(status_code=404, detail="考试不存在")
@@ -117,22 +147,11 @@ async def process_batch(req: schemas.ProcessRequest, db: Session = Depends(get_d
             models.ScanFile.status == models.ScanStatus.PENDING
         ).all()
 
-    processor = ExamProcessor(db)
-    success_count = 0
-    fail_count = 0
+    # Add all files to serial queue instead of concurrent processing
     for sf in scan_files:
-        try:
-            sf.status = models.ScanStatus.PROCESSING
-            db.commit()
-            await processor.process_scan(sf, exam)
-            success_count += 1
-        except Exception as e:
-            sf.status = models.ScanStatus.FAILED
-            sf.error_message = str(e)
-            db.commit()
-            fail_count += 1
+        get_process_queue().add(_auto_process, sf.id, req.exam_id)
 
-    return {"success": success_count, "failed": fail_count, "total": len(scan_files)}
+    return {"message": f"已加入处理队列，共{len(scan_files)}个文件", "total": len(scan_files)}
 
 
 @router.delete("/{scan_file_id}", status_code=204)
@@ -140,6 +159,8 @@ def delete_scan_file(scan_file_id: int, db: Session = Depends(get_db)):
     sf = db.query(models.ScanFile).filter(models.ScanFile.id == scan_file_id).first()
     if not sf:
         raise HTTPException(status_code=404, detail="扫描文件不存在")
+    # 清空引用该扫描文件的 student_exams.scan_file_id
+    db.query(models.StudentExam).filter(models.StudentExam.scan_file_id == scan_file_id).update({"scan_file_id": None})
     if os.path.exists(sf.file_path):
         os.remove(sf.file_path)
     db.delete(sf)

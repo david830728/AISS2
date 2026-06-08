@@ -161,6 +161,7 @@ class ScanFileOut(BaseModel):
     page_count: int
     detected_student_id: Optional[str]
     detected_student_name: Optional[str]
+    detected_page_side: Optional[str]
     created_at: datetime
     processed_at: Optional[datetime]
 
@@ -168,25 +169,30 @@ class ScanFileOut(BaseModel):
         from_attributes = True
 
 
-# ── Student ───────────────────────────────────────────────────────────────────
+# ── Student (per-exam roster) ─────────────────────────────────────────────────
 
-class StudentBase(BaseModel):
-    student_id: str
-    name: str
-    class_name: Optional[str] = None
-    grade: Optional[str] = None
-
-
-class StudentCreate(StudentBase):
-    pass
-
-
-class StudentOut(StudentBase):
+class StudentOut(BaseModel):
     id: int
+    exam_id: int
+    student_number: str
+    student_name: Optional[str] = None
+    class_name: Optional[str] = None
+    seat_number: Optional[int] = None
+    is_temp: bool = False
     created_at: datetime
 
     class Config:
         from_attributes = True
+
+
+class StudentImportResult(BaseModel):
+    imported: int
+    failed: int
+    errors: List[str] = []
+
+
+class GenerateTempRequest(BaseModel):
+    count: int
 
 
 # ── StudentAnswer ─────────────────────────────────────────────────────────────

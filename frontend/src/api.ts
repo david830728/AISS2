@@ -2,9 +2,23 @@ import axios from 'axios'
 
 const api = axios.create({ baseURL: '/api' })
 
+api.interceptors.request.use(config => {
+  const token = localStorage.getItem('token')
+  if (token) {
+    config.headers.Authorization = `Bearer ${token}`
+  }
+  return config
+})
+
 api.interceptors.response.use(
   (r) => r,
   (err) => {
+    if (err.response?.status === 401) {
+      localStorage.removeItem('token')
+      localStorage.removeItem('user')
+      window.location.href = '/login'
+      return Promise.reject(err)
+    }
     const msg = err.response?.data?.detail || err.message || '请求失败'
     return Promise.reject(new Error(msg))
   }
@@ -83,6 +97,7 @@ export interface ScanFile {
   page_count: number
   detected_student_id?: string
   detected_student_name?: string
+  detected_page_side?: string
   created_at: string
   processed_at?: string
 }
@@ -226,6 +241,10 @@ export const resultsApi = {
     api.post<{ graded: number; total_score: number }>(`/results/ai-grade-all/${studentExamId}`).then((r) => r.data),
   updateStudentInfo: (studentExamId: number, data: { student_name?: string; student_number?: string; class_name?: string }) =>
     api.patch(`/results/student-exam/${studentExamId}/info`, data).then((r) => r.data),
+  aiGradeAllExam: (examId: number) =>
+    api.post<{ task_id: string; status: string }>(`/results/exam/${examId}/ai-grade-all`).then((r) => r.data),
+  aiGradeAllExamStatus: (examId: number) =>
+    api.get<{ status: string; graded: number; total: number; failed: number }>(`/results/exam/${examId}/ai-grade-all/status`).then((r) => r.data),
 }
 
 // ── Reports API ───────────────────────────────────────────────────────────────
@@ -251,4 +270,56 @@ export const settingsApi = {
 
 export const dashboardApi = {
   get: () => api.get<DashboardData>('/dashboard').then((r) => r.data),
+}
+
+// ── Students API ───────────────────────────────────────────────────────────────
+
+export interface Student {
+  id: number
+  exam_id: number
+  student_number: string
+  student_name?: string
+  class_name?: string
+  seat_number?: number
+  is_temp: boolean
+  created_at: string
+}
+
+export interface StudentImportResult {
+  imported: number
+  failed: number
+  errors: string[]
+}
+
+export interface AnswerSheetStatus {
+  student_count: number
+  has_pdf: boolean
+  pdf_path?: string
+}
+
+export const studentsApi = {
+  list: (examId: number) =>
+    api.get<Student[]>(`/exams/${examId}/students`).then((r) => r.data),
+
+  generateTemp: (examId: number, count: number) =>
+    api.post<Student[]>(`/exams/${examId}/students/generate-temp`, { count }).then((r) => r.data),
+
+  import: (examId: number, file: File) => {
+    const fd = new FormData()
+    fd.append('file', file)
+    return api.post<StudentImportResult>(`/exams/${examId}/students/import`, fd).then((r) => r.data)
+  },
+
+  delete: (examId: number) =>
+    api.delete(`/exams/${examId}/students`).then((r) => r.data),
+
+  generatePdf: (examId: number, layout = 'by_student') =>
+    api.post<{ status: string; student_count: number }>(
+      `/exams/${examId}/students/generate-pdf`, null, { params: { layout } }
+    ).then((r) => r.data),
+
+  sheetStatus: (examId: number) =>
+    api.get<AnswerSheetStatus>(`/exams/${examId}/answer-sheet/status`).then((r) => r.data),
+
+  downloadUrl: (examId: number) => `/api/exams/${examId}/answer-sheet/download`,
 }

@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
-import { Plus, Trash2, Save, ArrowLeft, GripVertical, ImagePlus, FileText, Wand2 } from 'lucide-react'
+import { Plus, Trash2, Save, ArrowLeft, GripVertical, ImagePlus, FileText, Wand2, Users, Upload, FileDown } from 'lucide-react'
 import toast from 'react-hot-toast'
-import { examApi, SubQuestion } from '../api'
+import { examApi, studentsApi, Student, SubQuestion } from '../api'
 import TemplateRegionMapper, { Region, RegionItem } from '../components/TemplateRegionMapper'
 import AnswerSheetPreview, { RegionMap } from '../components/AnswerSheetPreview'
 
@@ -79,6 +79,13 @@ export default function ExamCreate() {
   // student info regions from answer sheet preview
   const [studentRegions, setStudentRegions] = useState<RegionMap>({})
 
+  // student roster
+  const [rosterMode, setRosterMode] = useState<'none' | 'upload' | 'temp'>('none')
+  const [tempCount, setTempCount] = useState(30)
+  const [rosterFile, setRosterFile] = useState<File | null>(null)
+  const [rosterPreview, setRosterPreview] = useState<Student[]>([])
+  const rosterInputRef = useRef<HTMLInputElement>(null)
+
   // batch add counts + titles
   const [batchChoice, setBatchChoice] = useState(5)
   const [batchFill, setBatchFill] = useState(3)
@@ -87,6 +94,12 @@ export default function ExamCreate() {
 
   useEffect(() => {
     if (isEdit && id) {
+      studentsApi.list(Number(id)).then(students => {
+        if (students.length > 0) {
+          setRosterPreview(students)
+          setRosterMode(students[0].is_temp ? 'temp' : 'upload')
+        }
+      })
       examApi.get(Number(id)).then(exam => {
         setName(exam.name)
         setSubject(exam.subject)
@@ -262,14 +275,42 @@ export default function ExamCreate() {
       let firstChoiceSeen = false
       return prev.map(q => {
         if (q.question_type === 'choice') {
+          const choicePage = regions['choice_table']?.page ?? q.page
           if (!firstChoiceSeen) {
             firstChoiceSeen = true
-            return { ...q, region: choiceTableRegion ?? q.region }
+            return { ...q, page: choicePage, region: choiceTableRegion ?? q.region }
           }
-          return { ...q, region: undefined }
+          return { ...q, page: choicePage, region: undefined }
+        }
+        // 填空题：从子题计算包围盒作为主region
+        if (q.question_type === 'fill' && q.sub_questions.length > 0) {
+          const sqRegions = q.sub_questions
+            .map((sq, si) => regions[`sq_${q._key}_${si}`])
+            .filter((r): r is Region => r !== undefined)
+          if (sqRegions.length > 0) {
+            const minX = Math.min(...sqRegions.map(r => r.x))
+            const minY = Math.min(...sqRegions.map(r => r.y))
+            const maxX = Math.max(...sqRegions.map(r => r.x + r.width))
+            const maxY = Math.max(...sqRegions.map(r => r.y + r.height))
+            const mainRegion: Region = {
+              x: minX,
+              y: minY,
+              width: maxX - minX,
+              height: maxY - minY,
+            }
+            return {
+              ...q,
+              page: regions[`sq_${q._key}_0`]?.page ?? q.page,
+              region: mainRegion,
+              sub_questions: q.sub_questions.map((sq, si) => ({
+                ...sq, region: regions[`sq_${q._key}_${si}`] ?? sq.region,
+              })),
+            }
+          }
         }
         return {
           ...q,
+          page: regions[`q_${q._key}`]?.page ?? q.page,
           region: regions[`q_${q._key}`] ?? q.region,
           sub_questions: q.sub_questions.map((sq, si) => ({
             ...sq, region: regions[`sq_${q._key}_${si}`] ?? sq.region,
@@ -277,6 +318,23 @@ export default function ExamCreate() {
         }
       })
     })
+  }
+
+  // ── Roster helpers ──────────────────────────────────────────────────────────
+
+  const downloadCsvTemplate = () => {
+    const csv = '学号,姓名,班级\n20230128,张三,九(1)班\n20230129,李四,九(1)班'
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a'); a.href = url; a.download = '考生名单模板.csv'; a.click()
+    URL.revokeObjectURL(url)
+  }
+
+  const handleRosterFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (!file) return
+    setRosterFile(file)
+    e.target.value = ''
   }
 
   // ── Save ───────────────────────────────────────────────────────────────────
@@ -298,7 +356,7 @@ export default function ExamCreate() {
         region: q.region,
         sub_questions: q.sub_questions.length > 0 ? q.sub_questions : undefined,
         answer_lines: q.question_type === 'subjective' ? q.answer_lines : undefined,
-        page: q.page || 'A',
+        page: q.page ?? 'A',
       }))
 
       // Build template_config, preserving all parts (image URL + student regions)
@@ -319,6 +377,7 @@ export default function ExamCreate() {
           total_score: calcTotal() || totalScore, description,
           template_config: finalTemplateConfig })
         await examApi.batchSetQuestions(Number(id), qPayload)
+        await _applyRoster(Number(id))
         toast.success('保存成功')
         navigate(`/exams/${id}`)
       } else {
@@ -331,10 +390,30 @@ export default function ExamCreate() {
           catch { toast.error('考试已创建，但模板上传失败，请在编辑页重新上传') }
         }
         toast.success('创建成功')
+        // 处理考生名单
+        await _applyRoster(exam.id)
         navigate(`/exams/${exam.id}/edit`)
       }
     } catch (err: unknown) { toast.error((err as Error).message) }
     finally { setSaving(false) }
+  }
+
+  const _applyRoster = async (examId: number) => {
+    try {
+      if (rosterMode === 'temp') {
+        await studentsApi.generateTemp(examId, tempCount)
+        await studentsApi.generatePdf(examId)
+        toast.success(`已生成 ${tempCount} 个临时学号，答题卡PDF生成中...`)
+      } else if (rosterMode === 'upload' && rosterFile) {
+        const res = await studentsApi.import(examId, rosterFile)
+        toast.success(`已导入 ${res.imported} 名考生${res.failed ? `，${res.failed} 条失败` : ''}`)
+        await studentsApi.generatePdf(examId)
+        toast.success('答题卡PDF生成中...')
+        setRosterFile(null)
+      }
+    } catch (err: unknown) {
+      toast.error('名单处理失败: ' + (err as Error).message)
+    }
   }
 
   // ── Render ─────────────────────────────────────────────────────────────────
@@ -397,6 +476,78 @@ export default function ExamCreate() {
               <label className="label">备注</label>
               <input className="input" value={description} onChange={e => setDescription(e.target.value)} placeholder="可选" />
             </div>
+          </div>
+
+          {/* ── 考生名单 ── */}
+          <div className="border-t border-gray-100 pt-4">
+            <div className="flex items-center gap-2 mb-3">
+              <Users className="w-4 h-4 text-blue-500" />
+              <span className="font-medium text-gray-800 text-sm">考生名单（可选）</span>
+              <span className="text-xs text-gray-400">— 用于生成个人专属答题卡PDF</span>
+            </div>
+            <div className="flex gap-2 mb-3">
+              {(['none', 'upload', 'temp'] as const).map(m => (
+                <button key={m} onClick={() => setRosterMode(m)}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors ${
+                    rosterMode === m ? 'bg-blue-500 text-white border-blue-500' : 'border-gray-200 text-gray-600 hover:border-gray-300'
+                  }`}>
+                  {m === 'none' ? '暂不设置' : m === 'upload' ? '上传Excel名单' : '自动生成临时学号'}
+                </button>
+              ))}
+            </div>
+
+            {rosterMode === 'temp' && (
+              <div className="flex items-center gap-3 bg-blue-50 rounded-lg px-4 py-3">
+                <span className="text-sm text-gray-700">班级人数</span>
+                <input type="number" min={1} max={999} value={tempCount}
+                  onChange={e => setTempCount(Math.max(1, Number(e.target.value)))}
+                  className="input text-sm w-20 py-1 text-center" />
+                <span className="text-sm text-gray-700">人</span>
+                <span className="text-xs text-gray-400">保存后自动生成格式为 日期+座号 的临时学号</span>
+              </div>
+            )}
+
+            {rosterMode === 'upload' && (
+              <div className="space-y-2">
+                <div className="flex items-center gap-3">
+                  <button onClick={downloadCsvTemplate}
+                    className="flex items-center gap-1.5 text-xs text-blue-600 hover:text-blue-800 border border-blue-200 rounded-lg px-3 py-1.5">
+                    <FileDown className="w-3.5 h-3.5" /> 下载Excel模板
+                  </button>
+                  <button onClick={() => rosterInputRef.current?.click()}
+                    className="flex items-center gap-1.5 text-xs text-gray-600 hover:text-gray-800 border border-gray-200 rounded-lg px-3 py-1.5">
+                    <Upload className="w-3.5 h-3.5" /> {rosterFile ? rosterFile.name : '选择文件 .xlsx/.csv'}
+                  </button>
+                  <input ref={rosterInputRef} type="file" accept=".xlsx,.csv" className="hidden" onChange={handleRosterFileChange} />
+                </div>
+                {rosterPreview.length > 0 && (
+                  <div className="border border-gray-100 rounded-lg overflow-hidden">
+                    <table className="w-full text-xs">
+                      <thead className="bg-gray-50">
+                        <tr>{['序号','学号','姓名','班级'].map(h => <th key={h} className="px-3 py-2 text-left text-gray-500 font-medium">{h}</th>)}</tr>
+                      </thead>
+                      <tbody>
+                        {rosterPreview.slice(0, 5).map((s, i) => (
+                          <tr key={i} className="border-t border-gray-100">
+                            <td className="px-3 py-1.5 text-gray-400">{i+1}</td>
+                            <td className="px-3 py-1.5">{s.student_number}</td>
+                            <td className="px-3 py-1.5">{s.student_name || '—'}</td>
+                            <td className="px-3 py-1.5">{s.class_name || '—'}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                    {rosterPreview.length > 5 && (
+                      <p className="text-xs text-gray-400 px-3 py-1.5 border-t border-gray-100">共 {rosterPreview.length} 人</p>
+                    )}
+                  </div>
+                )}
+                {isEdit && !rosterFile && rosterPreview.length > 0 && (
+                  <p className="text-xs text-blue-600">✓ 数据库中已有 {rosterPreview.length} 名考生名单</p>
+                )}
+                {rosterFile && <p className="text-xs text-green-600">✓ 已选择 {rosterFile.name}，保存后自动导入（将覆盖现有名单）</p>}
+              </div>
+            )}
           </div>
         </div>
       )}
@@ -481,21 +632,6 @@ export default function ExamCreate() {
 
                   {/* Card body */}
                   <div className="p-4 space-y-3">
-
-                    {/* Page selector */}
-                    <div className="flex items-center gap-2">
-                      <span className="text-xs text-gray-400 flex-shrink-0">所在面</span>
-                      {['A', 'B'].map(p => (
-                        <button key={p} onClick={() => updateQ(q._key, { page: p })}
-                          className={`px-3 py-0.5 rounded text-xs font-bold border transition-all ${
-                            (q.page || 'A') === p
-                              ? 'bg-indigo-500 border-indigo-500 text-white'
-                              : 'border-gray-300 text-gray-500 hover:border-indigo-300'
-                          }`}>
-                          {p}面
-                        </button>
-                      ))}
-                    </div>
 
                     {/* Title row (editable) */}
                     <div className="flex items-center gap-2">
@@ -597,9 +733,9 @@ export default function ExamCreate() {
                             <label className="flex items-center gap-1.5 text-xs text-gray-500">
                               答题行数
                               <input
-                                type="number" min={4} max={30}
+                                type="number" min={2} max={30}
                                 value={q.answer_lines}
-                                onChange={e => updateQ(q._key, { answer_lines: Math.min(30, Math.max(4, Number(e.target.value))) })}
+                                onChange={e => updateQ(q._key, { answer_lines: Math.min(30, Math.max(2, Number(e.target.value))) })}
                                 className="input text-xs py-0.5 w-14 text-center"
                               />
                               行

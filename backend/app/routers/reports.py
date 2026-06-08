@@ -5,8 +5,9 @@ from typing import Optional
 import io
 from app.database import get_db
 from app import models
+from app.auth import get_current_user
 
-router = APIRouter(prefix="/api/reports", tags=["reports"])
+router = APIRouter(prefix="/api/reports", tags=["reports"], dependencies=[Depends(get_current_user)])
 
 
 @router.get("/exam/{exam_id}/excel")

@@ -33,6 +33,9 @@ const PROVIDER_DEFAULTS: Record<string, Partial<AISettings>> = {
 }
 
 export default function SettingsPage() {
+  const user = JSON.parse(localStorage.getItem('user') || '{}')
+  const isAdmin = user.role === 'admin'
+
   const [settings, setSettings] = useState<AISettings>({
     api_provider: 'siliconflow',
     api_base_url: 'https://api.siliconflow.cn/v1',
@@ -91,6 +94,15 @@ export default function SettingsPage() {
     } finally {
       setTesting(false)
     }
+  }
+
+  if (!isAdmin) {
+    return (
+      <div className="flex flex-col items-center justify-center h-64 gap-3 text-gray-400">
+        <Settings className="w-10 h-10 opacity-30" />
+        <p className="text-base">无权访问此页面，请联系管理员</p>
+      </div>
+    )
   }
 
   return (
@@ -228,9 +240,9 @@ export default function SettingsPage() {
       <div className="card space-y-2 text-sm text-gray-500">
         <h2 className="font-semibold text-gray-700 text-base">关于系统</h2>
         <p>AI智能阅卷系统 v1.0.0</p>
-        <p>本系统专为中学教师设计，支持选择题、填空题和主观题的自动识别与评分。</p>
+        <p>本系统专为中小学教师设计，支持选择题、填空题和主观题的自动识别与评分。</p>
         <p className="text-xs text-gray-400">
-          后端：FastAPI + SQLAlchemy · 前端：React + Tailwind CSS · OCR：EasyOCR
+          后端：FastAPI + SQLAlchemy + MySQL · 前端：React + TypeScript + Tailwind CSS · 图像：OpenCV + EasyOCR
         </p>
       </div>
     </div>

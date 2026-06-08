@@ -299,7 +299,7 @@ export default function ScanMonitor() {
                 <th className="table-header">文件名</th>
                 <th className="table-header">关联考试</th>
                 <th className="table-header">大小</th>
-                <th className="table-header">识别学生</th>
+                <th className="table-header">卷面编号</th>
                 <th className="table-header text-center">状态</th>
                 <th className="table-header">上传时间</th>
                 <th className="table-header">错误信息</th>
@@ -320,7 +320,18 @@ export default function ScanMonitor() {
                       {sf.file_size ? `${(sf.file_size / 1024).toFixed(1)} KB` : '—'}
                     </td>
                     <td className="table-cell text-sm">
-                      {sf.detected_student_name || sf.detected_student_id || '—'}
+                      {sf.detected_student_id ? (
+                        <span className="font-mono">
+                          {sf.detected_student_id}
+                          {sf.detected_page_side && (
+                            <span className={`ml-1.5 px-1.5 py-0.5 rounded text-xs font-bold ${
+                              sf.detected_page_side === 'A'
+                                ? 'bg-blue-100 text-blue-700'
+                                : 'bg-orange-100 text-orange-700'
+                            }`}>{sf.detected_page_side}面</span>
+                          )}
+                        </span>
+                      ) : '—'}
                     </td>
                     <td className="table-cell text-center">
                       <span className={`badge ${sc.color}`}>{sc.label}</span>

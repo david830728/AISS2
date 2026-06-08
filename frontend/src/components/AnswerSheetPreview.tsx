@@ -214,7 +214,7 @@ function renderBlock(block: Block, rr: RrFn, _unused: number, sn: (t: string) =>
             {q.sub_questions.length > 0
               ? q.sub_questions.map((sq, si) => (
                 <div key={si} ref={el => rr(`sq_${q._key}_${si}`, el)}
-                  style={{ display: 'flex', alignItems: 'center', gap: '6pt', marginBottom: '6pt', paddingLeft: '18pt', flexWrap: 'wrap' }}>
+                  style={{ display: 'flex', alignItems: 'flex-end', gap: '6pt', marginBottom: '6pt', paddingLeft: '18pt', flexWrap: 'wrap' }}>
                   <span style={{ minWidth: '24pt', flexShrink: 0, fontSize: '10pt' }}>{sq.label}</span>
                   {Array.from({ length: sq.blank_count ?? 1 }).map((_, bi) => (
                     <span key={bi} style={{ display: 'inline-block', borderBottom: '1pt solid #000', width: '90pt', marginRight: '6pt', flexShrink: 0 }} />
@@ -697,11 +697,11 @@ export default function AnswerSheetPreview({
               padding: '0 12pt', gap: '24pt', fontSize: '10pt',
             }}>
               {([
-                { label: '考号', key: 'exam_number',   w: '90pt' },
+                { label: '学号', key: 'exam_number',   w: '90pt' },
                 { label: '姓名', key: 'student_name',  w: '70pt' },
                 { label: '班级', key: 'student_class', w: '70pt' },
               ] as const).map(({ label, key, w }) => (
-                <span key={key} style={{ display: 'inline-flex', alignItems: 'baseline', gap: '3pt', whiteSpace: 'nowrap' }}>
+                <span key={key} style={{ display: 'inline-flex', alignItems: 'flex-end', gap: '3pt', whiteSpace: 'nowrap' }}>
                   {label}：
                   <span ref={el => rr1(key, el)}
                     style={{ display: 'inline-block', borderBottom: '1pt solid #000', minWidth: w }} />

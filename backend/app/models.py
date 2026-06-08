@@ -1,6 +1,7 @@
 from sqlalchemy import Column, Integer, String, Float, Text, DateTime, ForeignKey, JSON, Boolean, Enum
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
+from datetime import datetime
 import enum
 from app.database import Base
 
@@ -50,9 +51,12 @@ class Exam(Base):
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
 
+    answer_sheet_path = Column(String(1000))  # 生成的答题卡PDF路径
+
     questions = relationship("ExamQuestion", back_populates="exam", cascade="all, delete-orphan")
     scan_files = relationship("ScanFile", back_populates="exam", cascade="all, delete-orphan")
     student_exams = relationship("StudentExam", back_populates="exam", cascade="all, delete-orphan")
+    students = relationship("Student", back_populates="exam", cascade="all, delete-orphan")
 
 
 class ExamQuestion(Base):
@@ -71,7 +75,7 @@ class ExamQuestion(Base):
     order_index = Column(Integer, default=0)
     sub_questions = Column(JSON)
     answer_lines = Column(Integer, default=8)
-    page = Column(String(10), nullable=True, default="A")
+    page = Column(String(10), nullable=True, default=None)
 
     exam = relationship("Exam", back_populates="questions")
     student_answers = relationship("StudentAnswer", back_populates="question", cascade="all, delete-orphan")
@@ -82,7 +86,7 @@ class ScanFile(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     exam_id = Column(Integer, ForeignKey("exams.id"), nullable=True)
-    file_path = Column(String(1000), nullable=False, unique=True)
+    file_path = Column(String(500), nullable=False, unique=True)
     file_name = Column(String(500))
     file_size = Column(Integer)
     status = Column(String(20), default=ScanStatus.PENDING)
@@ -90,6 +94,7 @@ class ScanFile(Base):
     page_count = Column(Integer, default=0)
     detected_student_id = Column(String(100))
     detected_student_name = Column(String(100))
+    detected_page_side = Column(String(10))
     created_at = Column(DateTime, server_default=func.now())
     processed_at = Column(DateTime)
 
@@ -97,15 +102,19 @@ class ScanFile(Base):
 
 
 class Student(Base):
+    """按考试的考生名单（用于生成答题卡和快速识别身份）。"""
     __tablename__ = "students"
 
-    id = Column(Integer, primary_key=True, index=True)
-    student_id = Column(String(50), unique=True, nullable=False)
-    name = Column(String(100), nullable=False)
-    class_name = Column(String(100))
-    grade = Column(String(50))
-    created_at = Column(DateTime, server_default=func.now())
+    id             = Column(Integer, primary_key=True, index=True)
+    exam_id        = Column(Integer, ForeignKey("exams.id"), nullable=False)
+    student_number = Column(String(50), nullable=False)   # 学号
+    student_name   = Column(String(100))                  # 姓名（临时学号时可为空）
+    class_name     = Column(String(100))                  # 班级
+    seat_number    = Column(Integer)                      # 座号
+    is_temp        = Column(Boolean, default=False)       # 是否临时学号
+    created_at     = Column(DateTime, default=datetime.utcnow)
 
+    exam = relationship("Exam", back_populates="students")
     student_exams = relationship("StudentExam", back_populates="student")
 
 
