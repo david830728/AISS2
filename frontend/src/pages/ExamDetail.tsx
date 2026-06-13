@@ -55,6 +55,25 @@ export default function ExamDetail() {
     studentsApi.sheetStatus(Number(id)).then(setSheetStatus).catch(() => {})
   }, [id])
 
+  const handleDownloadPdf = async () => {
+    if (!id) return
+    const token = localStorage.getItem('token')
+    const res = await fetch(`/api/exams/${id}/answer-sheet/download`, {
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    })
+    if (!res.ok) {
+      toast.error('下载失败，请重新登录')
+      return
+    }
+    const blob = await res.blob()
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `答题卡_${id}.pdf`
+    a.click()
+    URL.revokeObjectURL(url)
+  }
+
   const handleGeneratePdf = async (layout = 'by_student') => {
     if (!id) return
     setGeneratingPdf(true)
@@ -171,10 +190,10 @@ export default function ExamDetail() {
             ) : sheetStatus.has_pdf ? (
               <div className="flex items-center gap-3">
                 <p className="text-sm text-gray-700">答题卡PDF已生成（共 {sheetStatus.student_count} 份）</p>
-                <a href={studentsApi.downloadUrl(Number(id))} target="_blank" rel="noreferrer"
+                <button onClick={handleDownloadPdf}
                   className="btn-primary text-xs py-1 px-3">
                   <FileDown className="w-3.5 h-3.5" /> 下载PDF
-                </a>
+                </button>
                 <button onClick={() => handleGeneratePdf()} disabled={generatingPdf}
                   className="btn-secondary text-xs py-1 px-3">
                   {generatingPdf ? '生成中...' : '重新生成'}
