@@ -1,4 +1,5 @@
 import os
+from urllib.parse import quote_plus
 from datetime import datetime, timedelta
 from typing import Optional
 import bcrypt as _bcrypt
@@ -14,10 +15,12 @@ SECRET_KEY = os.getenv("JWT_SECRET", "aiss2-secret-key-change-in-production")
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_HOURS = 24
 
+_DB_PASSWORD = quote_plus(os.getenv('DB_PASSWORD', ''))
+AUTH_DB_NAME = os.getenv('AUTH_DB_NAME', 'aiss2_auth')
 SHARED_DB_URL = (
-    f"mysql+pymysql://{os.getenv('DB_USER','root')}:{os.getenv('DB_PASSWORD','')}@"
+    f"mysql+pymysql://{os.getenv('DB_USER','root')}:{_DB_PASSWORD}@"
     f"{os.getenv('DB_HOST','localhost')}:{os.getenv('DB_PORT','3306')}"
-    f"/junior_resource_share?charset=utf8mb4"
+    f"/{AUTH_DB_NAME}?charset=utf8mb4"
 )
 shared_engine = create_engine(SHARED_DB_URL, pool_pre_ping=True)
 
