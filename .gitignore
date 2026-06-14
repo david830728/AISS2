@@ -14,3 +14,4 @@ frontend/.vite/
 **/*.pyo
 .DS_Store
 *.db-journal
+backend/scans/

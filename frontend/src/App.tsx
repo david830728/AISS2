@@ -62,7 +62,7 @@ function AppLayout() {
 
         {/* Navigation */}
         <nav className="flex-1 px-3 py-4 space-y-1">
-          {navItems.map(({ to, icon: Icon, label, exact }) => {
+          {navItems.filter(({ to }) => to !== '/settings' || isAdmin).map(({ to, icon: Icon, label, exact }) => {
             const active = exact
               ? location.pathname === to
               : location.pathname.startsWith(to)
@@ -93,6 +93,12 @@ function AppLayout() {
               <p className="text-blue-300 text-xs">{isAdmin ? '管理员' : '教师'}</p>
             </div>
           </div>
+          <a
+            href="/portal.html"
+            className="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-blue-200 hover:bg-white/10 hover:text-white text-sm transition-all"
+          >
+            切换系统
+          </a>
           <button
             onClick={handleLogout}
             className="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-blue-200 hover:bg-white/10 hover:text-white text-sm transition-all"

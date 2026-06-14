@@ -104,6 +104,11 @@ export default function Login() {
         </div>
 
         <p className="text-center text-xs text-gray-400 mt-6">如需账号请联系管理员</p>
+        <div className="text-center mt-3">
+          <a href="/portal.html" className="text-xs text-gray-400 hover:text-gray-600">
+            ← 返回导航首页
+          </a>
+        </div>
       </div>
     </div>
   )
