@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>乐清市白石中学 · 智慧教学平台</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    
+    body {
+      font-family: 'PingFang SC', 'Microsoft YaHei', sans-serif;
+      background: linear-gradient(135deg, #1a3a6b 0%, #2d6a9f 50%, #1a8a6b 100%);
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 20px;
+    }
+
+    .header {
+      text-align: center;
+      margin-bottom: 48px;
+      color: white;
+    }
+
+    .header h1 {
+      font-size: 28px;
+      font-weight: 700;
+      margin-bottom: 8px;
+      text-shadow: 0 2px 4px rgba(0,0,0,0.3);
+    }
+
+    .header p {
+      font-size: 15px;
+      opacity: 0.85;
+    }
+
+    .cards {
+      display: flex;
+      gap: 24px;
+      flex-wrap: wrap;
+      justify-content: center;
+      max-width: 800px;
+      width: 100%;
+    }
+
+    .card {
+      background: rgba(255,255,255,0.95);
+      border-radius: 16px;
+      padding: 40px 32px;
+      width: 320px;
+      text-align: center;
+      box-shadow: 0 8px 32px rgba(0,0,0,0.2);
+      transition: transform 0.2s, box-shadow 0.2s;
+      text-decoration: none;
+      color: inherit;
+      display: block;
+    }
+
+    .card:hover {
+      transform: translateY(-4px);
+      box-shadow: 0 12px 40px rgba(0,0,0,0.25);
+    }
+
+    .card-icon {
+      font-size: 48px;
+      margin-bottom: 16px;
+    }
+
+    .card h2 {
+      font-size: 20px;
+      font-weight: 700;
+      color: #1a3a6b;
+      margin-bottom: 10px;
+    }
+
+    .card p {
+      font-size: 14px;
+      color: #666;
+      line-height: 1.6;
+      margin-bottom: 24px;
+    }
+
+    .btn {
+      display: inline-block;
+      padding: 10px 32px;
+      border-radius: 8px;
+      font-size: 15px;
+      font-weight: 600;
+      text-decoration: none;
+      transition: opacity 0.2s;
+    }
+
+    .btn:hover { opacity: 0.85; }
+
+    .btn-blue {
+      background: #1a3a6b;
+      color: white;
+    }
+
+    .btn-green {
+      background: #1a8a6b;
+      color: white;
+    }
+
+    .footer {
+      margin-top: 48px;
+      text-align: center;
+      color: rgba(255,255,255,0.7);
+      font-size: 13px;
+    }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <h1>🏫 乐清市白石中学</h1>
+    <p>智慧教学平台 · 请选择您要使用的系统</p>
+  </div>
+
+  <div class="cards">
+    <a class="card" href="/grading/">
+      <div class="card-icon">📝</div>
+      <h2>AI 智能阅卷系统</h2>
+      <p>上传扫描答题卡，AI自动批改填空题和主观题，快速生成成绩报表</p>
+      <span class="btn btn-blue">进入系统</span>
+    </a>
+
+    <a class="card" href="http://118.25.147.253:3000" target="_blank">
+      <div class="card-icon">📚</div>
+      <h2>教学资源分享平台</h2>
+      <p>浏览和下载教学资源，分享优质课件、试卷和教学素材</p>
+      <span class="btn btn-green">进入平台</span>
+    </a>
+  </div>
+
+  <div class="footer">
+    <p>乐清市白石中学 · 仅供校内教师使用</p>
+  </div>
+</body>
+</html>
